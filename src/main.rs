@@ -12,7 +12,6 @@ fn main() -> anyhow::Result<()> {
             target_os = "freebsd",
             target_os = "netbsd"
         )),
-        not(feature = "jack")
     ))]
     let host = cpal::default_host();
 
@@ -44,16 +43,23 @@ pub fn run<T>(device: &cpal::Device, config: &cpal::StreamConfig) -> Result<(), 
 where
     T: SizedSample + FromSample<f32>,
 {
+    let sample_rate = config.sample_rate.0 as f32;
     let channels = config.channels as usize;
     let mut current_value = 0.0;
+    let mut t = 0.0;
+    let mut lpf = LowPassFilter::new(50.0, sample_rate);
 
     let mut next_value = move || {
-        // Generate a small random change, typically in the range -0.01 to 0.01
         let mut rng = rand::thread_rng();
-        let change: f32 = rng.gen_range(-0.6..0.6);
-        current_value += (0.02 * change) / 1.02;
+        let change: f32 = rng.gen_range(-0.2..0.2);
+        current_value += change;
         current_value = current_value.clamp(-1.0, 1.0);
-        current_value
+
+        // Fade in the brown noise sound
+        let result = t * current_value;
+        t = (t + 0.2 / sample_rate).min(1.0);
+
+        lpf.apply(result)
     };
 
     let err_fn = |err| eprintln!("an error occurred on stream: {}", err);
@@ -82,5 +88,33 @@ where
         for sample in frame.iter_mut() {
             *sample = value;
         }
+    }
+}
+
+struct LowPassFilter {
+    cutoff: f32,
+    sample_rate: f32,
+    prev_output: f32,
+}
+
+impl LowPassFilter {
+    fn new(cutoff: f32, sample_rate: f32) -> Self {
+        LowPassFilter {
+            cutoff,
+            sample_rate,
+            prev_output: 0.0,
+        }
+    }
+
+    fn apply(&mut self, input: f32) -> f32 {
+        let rc = 1.0 / (self.cutoff * 2.0 * std::f32::consts::PI);
+        let dt = 1.0 / self.sample_rate;
+        let alpha = dt / (rc + dt);
+
+        let output = self.prev_output + alpha * (input - self.prev_output);
+
+        self.prev_output = output;
+
+        output
     }
 }
