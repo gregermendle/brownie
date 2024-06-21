@@ -4,15 +4,13 @@ use cpal::{
 };
 use rand::prelude::*;
 
-fn main() -> anyhow::Result<()> {
-    #[cfg(any(
-        not(any(
-            target_os = "linux",
-            target_os = "dragonfly",
-            target_os = "freebsd",
-            target_os = "netbsd"
-        )),
-    ))]
+pub fn brownie() -> anyhow::Result<()> {
+    #[cfg(any(not(any(
+        target_os = "linux",
+        target_os = "dragonfly",
+        target_os = "freebsd",
+        target_os = "netbsd"
+    )),))]
     let host = cpal::default_host();
 
     let device = host
