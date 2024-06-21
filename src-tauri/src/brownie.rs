@@ -1,10 +1,71 @@
+use std::{
+    sync::{
+        atomic::{self, AtomicBool},
+        mpsc,
+    },
+    thread,
+};
+
 use cpal::{
     traits::{DeviceTrait, HostTrait, StreamTrait},
-    FromSample, Sample, SizedSample,
+    FromSample, Sample, SizedSample, Stream,
 };
 use rand::prelude::*;
 
-pub fn brownie() -> anyhow::Result<()> {
+enum Command {
+    Play,
+    Pause,
+}
+
+pub struct Brownie {
+    sender: mpsc::Sender<Command>,
+    playing: AtomicBool,
+}
+
+impl Brownie {
+    pub fn new() -> Self {
+        let (sender, receiver) = mpsc::channel::<Command>();
+        // Spawn a new thread to listen for commands
+        thread::spawn(move || {
+            let stream = create_stream().unwrap();
+            while let Ok(command) = receiver.recv() {
+                match command {
+                    Command::Play => {
+                        stream.play().unwrap();
+                    }
+                    Command::Pause => {
+                        stream.pause().unwrap();
+                    }
+                }
+            }
+        });
+
+        Brownie {
+            sender,
+            playing: AtomicBool::new(false),
+        }
+    }
+
+    pub fn play(&self) {
+        if self.playing.load(atomic::Ordering::Relaxed) == false {
+            self.playing.store(true, atomic::Ordering::Relaxed);
+            self.sender.send(Command::Play).unwrap();
+        }
+    }
+
+    pub fn pause(&self) {
+        if self.playing.load(atomic::Ordering::Relaxed) == true {
+            self.playing.store(false, atomic::Ordering::Relaxed);
+            self.sender.send(Command::Pause).unwrap();
+        }
+    }
+
+    pub fn is_playing(&self) -> bool {
+        self.playing.load(atomic::Ordering::Relaxed)
+    }
+}
+
+fn create_stream() -> anyhow::Result<Stream> {
     #[cfg(any(not(any(
         target_os = "linux",
         target_os = "dragonfly",
@@ -21,15 +82,11 @@ pub fn brownie() -> anyhow::Result<()> {
     match config.sample_format() {
         cpal::SampleFormat::I8 => run::<i8>(&device, &config.into()),
         cpal::SampleFormat::I16 => run::<i16>(&device, &config.into()),
-        // cpal::SampleFormat::I24 => run::<I24>(&device, &config.into()),
         cpal::SampleFormat::I32 => run::<i32>(&device, &config.into()),
-        // cpal::SampleFormat::I48 => run::<I48>(&device, &config.into()),
         cpal::SampleFormat::I64 => run::<i64>(&device, &config.into()),
         cpal::SampleFormat::U8 => run::<u8>(&device, &config.into()),
         cpal::SampleFormat::U16 => run::<u16>(&device, &config.into()),
-        // cpal::SampleFormat::U24 => run::<U24>(&device, &config.into()),
         cpal::SampleFormat::U32 => run::<u32>(&device, &config.into()),
-        // cpal::SampleFormat::U48 => run::<U48>(&device, &config.into()),
         cpal::SampleFormat::U64 => run::<u64>(&device, &config.into()),
         cpal::SampleFormat::F32 => run::<f32>(&device, &config.into()),
         cpal::SampleFormat::F64 => run::<f64>(&device, &config.into()),
@@ -37,7 +94,7 @@ pub fn brownie() -> anyhow::Result<()> {
     }
 }
 
-pub fn run<T>(device: &cpal::Device, config: &cpal::StreamConfig) -> Result<(), anyhow::Error>
+fn run<T>(device: &cpal::Device, config: &cpal::StreamConfig) -> Result<Stream, anyhow::Error>
 where
     T: SizedSample + FromSample<f32>,
 {
@@ -70,11 +127,7 @@ where
         err_fn,
         None,
     )?;
-    stream.play()?;
-
-    loop {
-        std::thread::sleep(std::time::Duration::from_millis(5000));
-    }
+    Ok(stream)
 }
 
 fn write_data<T>(output: &mut [T], channels: usize, next_sample: &mut dyn FnMut() -> f32)
