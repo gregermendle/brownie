@@ -1,24 +1,14 @@
 use std::sync::Arc;
 
 use brownie::Brownie;
-use tauri::{AppHandle, Manager};
+use tauri::{
+    menu::{MenuBuilder, MenuItemBuilder},
+    tray::{TrayIconBuilder, TrayIconEvent},
+};
 
 pub mod brownie;
 
 type AppState = Arc<Brownie>;
-
-// Learn more about Tauri commands at https://tauri.app/v1/guides/features/command
-#[tauri::command]
-fn greet(app: AppHandle) {
-    let store = app.state::<AppState>();
-    let brownie = Arc::clone(&store);
-    if brownie.is_playing() {
-        brownie.pause()
-    } else {
-        brownie.play();
-    }
-    ()
-}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -26,10 +16,41 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .setup(|app| {
             let brownie = Arc::new(Brownie::new());
-            app.manage::<AppState>(brownie);
+
+            let close = MenuItemBuilder::with_id("close", "Close").build(app)?;
+            let menu = MenuBuilder::new(app).items(&[&close]).build()?;
+            let _tray = TrayIconBuilder::new()
+                .menu(&menu)
+                .on_menu_event(move |app, event| match event.id().as_ref() {
+                    "close" => {
+                        app.exit(0);
+                    }
+                    _ => (),
+                })
+                .on_tray_icon_event(move |tray, event| {
+                    let brownie = Arc::clone(&brownie);
+                    match event {
+                        TrayIconEvent::Click {
+                            id: _,
+                            position: _,
+                            rect: _,
+                            button: _,
+                            button_state: _,
+                        } => {
+                            println!("playing");
+                            if brownie.is_playing() {
+                                brownie.pause();
+                            } else {
+                                brownie.play();
+                            }
+                        }
+                        _ => todo!(),
+                    }
+                })
+                .build(app)?;
+
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![greet])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
