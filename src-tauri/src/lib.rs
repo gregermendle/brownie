@@ -95,6 +95,7 @@ pub fn run() {
                 }
             });
 
+            #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
             Ok(())
