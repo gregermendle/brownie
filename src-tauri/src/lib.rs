@@ -1,14 +1,21 @@
-use std::sync::Arc;
-
 use brownie::Brownie;
+use std::{
+    sync::{mpsc, Arc},
+    thread,
+};
 use tauri::{
-    menu::{MenuBuilder, MenuItemBuilder},
-    tray::{TrayIconBuilder, TrayIconEvent},
+    image::Image,
+    menu::{CheckMenuItem, MenuBuilder, MenuItemBuilder, PredefinedMenuItem},
+    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
+    Manager,
 };
 
 pub mod brownie;
+pub mod lowpass;
 
-type AppState = Arc<Brownie>;
+enum Command {
+    Toggle,
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -17,37 +24,78 @@ pub fn run() {
         .setup(|app| {
             let brownie = Arc::new(Brownie::new());
 
-            let close = MenuItemBuilder::with_id("close", "Close").build(app)?;
-            let menu = MenuBuilder::new(app).items(&[&close]).build()?;
-            let _tray = TrayIconBuilder::new()
+            let quit = MenuItemBuilder::new("Quit").id("quit").build(app)?;
+            let separator = PredefinedMenuItem::separator(app)?;
+            let muted = CheckMenuItem::with_id(app, "muted", "Muted", true, false, None::<String>)?;
+
+            let menu = MenuBuilder::new(app)
+                .items(&[&quit, &separator, &muted])
+                .build()?;
+
+            let on_icon_path = app.path().resource_dir().unwrap().join("icons/icon.ico");
+
+            let off_icon_path = app
+                .path()
+                .resource_dir()
+                .unwrap()
+                .join("icons-off/icon.ico");
+
+            let on_icon = Image::from_path(on_icon_path).unwrap();
+            let off_icon = Image::from_path(off_icon_path).unwrap();
+            
+            let (sender, receiver) = mpsc::channel::<Command>();
+            let sender1 = sender.clone();
+            let sender2 = sender.clone();
+
+            let tray = TrayIconBuilder::new()
+                .icon(app.default_window_icon().unwrap().clone())
+                .tooltip("Brownie (press to mute / unmute)")
                 .menu(&menu)
+                .menu_on_left_click(false)
                 .on_menu_event(move |app, event| match event.id().as_ref() {
-                    "close" => {
-                        app.exit(0);
+                    "quit" => app.exit(0),
+                    "muted" => {
+                        sender1.send(Command::Toggle).unwrap();
                     }
+                    _ => {}
+                })
+                .on_tray_icon_event(move |_, event| match event {
+                    TrayIconEvent::Click {
+                        button,
+                        button_state,
+                        ..
+                    } => match button {
+                        MouseButton::Left => match button_state {
+                            MouseButtonState::Down => {
+                                sender2.send(Command::Toggle).unwrap();
+                            }
+                            _ => (),
+                        },
+                        _ => (),
+                    },
                     _ => (),
                 })
-                .on_tray_icon_event(move |tray, event| {
-                    let brownie = Arc::clone(&brownie);
-                    match event {
-                        TrayIconEvent::Click {
-                            id: _,
-                            position: _,
-                            rect: _,
-                            button: _,
-                            button_state: _,
-                        } => {
-                            println!("playing");
-                            if brownie.is_playing() {
-                                brownie.pause();
+                .build(app)?;
+
+            thread::spawn(move || {
+                while let Ok(command) = receiver.recv() {
+                    match command {
+                        Command::Toggle => {
+                            if brownie.is_muted() {
+                                tray.set_icon(Some(on_icon.clone())).unwrap();
+                                muted.set_checked(false).unwrap();
+                                brownie.unmute();
                             } else {
-                                brownie.play();
+                                tray.set_icon(Some(off_icon.clone())).unwrap();
+                                muted.set_checked(true).unwrap();
+                                brownie.mute();
                             }
                         }
-                        _ => todo!(),
                     }
-                })
-                .build(app)?;
+                }
+            });
+
+            app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
             Ok(())
         })

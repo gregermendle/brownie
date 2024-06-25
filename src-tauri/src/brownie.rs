@@ -1,40 +1,42 @@
-use std::{
-    sync::{
-        atomic::{self, AtomicBool},
-        mpsc,
-    },
-    thread,
-};
-
+use crate::lowpass::LowPassFilter;
 use cpal::{
     traits::{DeviceTrait, HostTrait, StreamTrait},
     FromSample, Sample, SizedSample, Stream,
 };
 use rand::prelude::*;
+use std::{
+    sync::{
+        atomic::{self, AtomicI8, Ordering},
+        mpsc, Arc,
+    },
+    thread,
+};
+use tauri::Pixel;
 
-enum Command {
-    Play,
-    Pause,
+pub enum Command {
+    Mute,
+    Unmute,
 }
 
 pub struct Brownie {
     sender: mpsc::Sender<Command>,
-    playing: AtomicBool,
+    muted: Arc<AtomicI8>,
 }
 
 impl Brownie {
     pub fn new() -> Self {
         let (sender, receiver) = mpsc::channel::<Command>();
-        // Spawn a new thread to listen for commands
+        let muted = Arc::new(AtomicI8::new(1));
+        let muted_local = Arc::clone(&muted);
         thread::spawn(move || {
-            let stream = create_stream().unwrap();
+            let _stream = create_stream(muted.clone()).unwrap();
             while let Ok(command) = receiver.recv() {
                 match command {
-                    Command::Play => {
-                        stream.play().unwrap();
+                    Command::Mute => {
+                        muted.store(-1, Ordering::Relaxed);
                     }
-                    Command::Pause => {
-                        stream.pause().unwrap();
+                    Command::Unmute => {
+                        muted.store(1, Ordering::Relaxed);
                     }
                 }
             }
@@ -42,30 +44,24 @@ impl Brownie {
 
         Brownie {
             sender,
-            playing: AtomicBool::new(false),
+            muted: muted_local,
         }
     }
 
-    pub fn play(&self) {
-        if self.playing.load(atomic::Ordering::Relaxed) == false {
-            self.playing.store(true, atomic::Ordering::Relaxed);
-            self.sender.send(Command::Play).unwrap();
-        }
+    pub fn mute(&self) {
+        self.sender.send(Command::Mute).unwrap();
     }
 
-    pub fn pause(&self) {
-        if self.playing.load(atomic::Ordering::Relaxed) == true {
-            self.playing.store(false, atomic::Ordering::Relaxed);
-            self.sender.send(Command::Pause).unwrap();
-        }
+    pub fn unmute(&self) {
+        self.sender.send(Command::Unmute).unwrap();
     }
 
-    pub fn is_playing(&self) -> bool {
-        self.playing.load(atomic::Ordering::Relaxed)
+    pub fn is_muted(&self) -> bool {
+        self.muted.load(atomic::Ordering::Relaxed) < 1
     }
 }
 
-fn create_stream() -> anyhow::Result<Stream> {
+fn create_stream(volume: Arc<AtomicI8>) -> anyhow::Result<Stream> {
     #[cfg(any(not(any(
         target_os = "linux",
         target_os = "dragonfly",
@@ -80,21 +76,25 @@ fn create_stream() -> anyhow::Result<Stream> {
 
     let config = device.default_output_config().unwrap();
     match config.sample_format() {
-        cpal::SampleFormat::I8 => run::<i8>(&device, &config.into()),
-        cpal::SampleFormat::I16 => run::<i16>(&device, &config.into()),
-        cpal::SampleFormat::I32 => run::<i32>(&device, &config.into()),
-        cpal::SampleFormat::I64 => run::<i64>(&device, &config.into()),
-        cpal::SampleFormat::U8 => run::<u8>(&device, &config.into()),
-        cpal::SampleFormat::U16 => run::<u16>(&device, &config.into()),
-        cpal::SampleFormat::U32 => run::<u32>(&device, &config.into()),
-        cpal::SampleFormat::U64 => run::<u64>(&device, &config.into()),
-        cpal::SampleFormat::F32 => run::<f32>(&device, &config.into()),
-        cpal::SampleFormat::F64 => run::<f64>(&device, &config.into()),
+        cpal::SampleFormat::I8 => run::<i8>(&device, &config.into(), volume),
+        cpal::SampleFormat::I16 => run::<i16>(&device, &config.into(), volume),
+        cpal::SampleFormat::I32 => run::<i32>(&device, &config.into(), volume),
+        cpal::SampleFormat::I64 => run::<i64>(&device, &config.into(), volume),
+        cpal::SampleFormat::U8 => run::<u8>(&device, &config.into(), volume),
+        cpal::SampleFormat::U16 => run::<u16>(&device, &config.into(), volume),
+        cpal::SampleFormat::U32 => run::<u32>(&device, &config.into(), volume),
+        cpal::SampleFormat::U64 => run::<u64>(&device, &config.into(), volume),
+        cpal::SampleFormat::F32 => run::<f32>(&device, &config.into(), volume),
+        cpal::SampleFormat::F64 => run::<f64>(&device, &config.into(), volume),
         sample_format => panic!("Unsupported sample format '{sample_format}'"),
     }
 }
 
-fn run<T>(device: &cpal::Device, config: &cpal::StreamConfig) -> Result<Stream, anyhow::Error>
+fn run<T>(
+    device: &cpal::Device,
+    config: &cpal::StreamConfig,
+    volume: Arc<AtomicI8>,
+) -> Result<Stream, anyhow::Error>
 where
     T: SizedSample + FromSample<f32>,
 {
@@ -102,7 +102,7 @@ where
     let channels = config.channels as usize;
     let mut current_value = 0.0;
     let mut t = 0.0;
-    let mut lpf = LowPassFilter::new(50.0, sample_rate);
+    let mut lpf = LowPassFilter::new(40.0, sample_rate);
 
     let mut next_value = move || {
         let mut rng = rand::thread_rng();
@@ -112,7 +112,8 @@ where
 
         // Fade in the brown noise sound
         let result = t * current_value;
-        t = (t + 0.2 / sample_rate).min(1.0);
+        let mag = 2.0 * volume.load(Ordering::Relaxed).cast::<f32>();
+        t = (t + mag / sample_rate).clamp(0.0, 1.0);
 
         lpf.apply(result)
     };
@@ -127,6 +128,7 @@ where
         err_fn,
         None,
     )?;
+    stream.play()?;
     Ok(stream)
 }
 
@@ -139,33 +141,5 @@ where
         for sample in frame.iter_mut() {
             *sample = value;
         }
-    }
-}
-
-struct LowPassFilter {
-    cutoff: f32,
-    sample_rate: f32,
-    prev_output: f32,
-}
-
-impl LowPassFilter {
-    fn new(cutoff: f32, sample_rate: f32) -> Self {
-        LowPassFilter {
-            cutoff,
-            sample_rate,
-            prev_output: 0.0,
-        }
-    }
-
-    fn apply(&mut self, input: f32) -> f32 {
-        let rc = 1.0 / (self.cutoff * 2.0 * std::f32::consts::PI);
-        let dt = 1.0 / self.sample_rate;
-        let alpha = dt / (rc + dt);
-
-        let output = self.prev_output + alpha * (input - self.prev_output);
-
-        self.prev_output = output;
-
-        output
     }
 }

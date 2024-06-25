@@ -1,32 +1,28 @@
 {
-  "productName": "brownie",
-  "version": "0.0.0",
-  "identifier": "com.tauri.dev",
-  "build": {
-    "beforeDevCommand": "npm run dev",
-    "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "npm run build",
-    "frontendDist": "../dist"
-  },
+  "productName": "Brownie",
+  "version": "1.0.0",
+  "identifier": "com.brownie",
   "app": {
     "windows": [],
     "security": {
       "csp": null
-    },
-    "trayIcon": {
-      "iconPath": "icons/icon.png",
-      "tooltip": "Toggle Brownie"
     }
   },
   "bundle": {
+    "category": "Utilities",
     "active": true,
     "targets": "all",
+    "resources": [
+      "icons/icon.ico",
+      "icons-off/icon.ico"
+    ],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
       "icons/128x128@2x.png",
       "icons/icon.icns",
-      "icons/icon.ico"
+      "icons/icon.ico",
+      "icons-off/icon.ico"
     ]
   }
 }
